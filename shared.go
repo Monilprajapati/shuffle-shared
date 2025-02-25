@@ -18895,6 +18895,30 @@ func GetArticlesList(resp http.ResponseWriter, request *http.Request) {
 			continue
 		}
 
+		// Get the latest commit for this file to get its date
+		commits, _, err := client.Repositories.ListCommits(ctx, owner, repo, &github.CommitsListOptions{
+			Path: fmt.Sprintf("%s/%s", path, *item.Name),
+			ListOptions: github.ListOptions{
+				PerPage: 1,
+			},
+		})
+		
+		
+		lastModified := ""
+		if err == nil && len(commits) > 0 && commits[0].Commit != nil && commits[0].Commit.Committer != nil && commits[0].Commit.Committer.Date != nil {
+			lastModified = commits[0].Commit.Committer.Date.Format(time.RFC3339)
+		} else {
+			if err != nil {
+				log.Printf("[WARNING] Failed to get commit info for %s: %v", *item.Name, err)
+			}
+			// Fallback to SHA if we can't get commit date
+			if item.SHA != nil {
+				lastModified = *item.SHA
+			} else {
+				lastModified = time.Now().Format(time.RFC3339) // Default to current time
+			}
+		}
+
 		// FIXME: Scuffed readtime calc
 		// Average word length = 5. Space = 1. 5+1 = 6 avg.
 		// Words = *item.Size/6/250
@@ -18903,13 +18927,34 @@ func GetArticlesList(resp http.ResponseWriter, request *http.Request) {
 		githubResp := GithubResp{
 			Name:         (*item.Name)[0 : len(*item.Name)-3],
 			Contributors: []GithubAuthor{},
-			Edited:       "",
+			Edited:       lastModified,
 			ReadTime:     *item.Size / 6 / 250,
 			Link:         fmt.Sprintf("https://github.com/%s/%s/blob/master/%s/%s", owner, repo, path, *item.Name),
 		}
 
 		names = append(names, githubResp)
 	}
+
+	// Sort by creation date (newest first) using actual timestamps
+	sort.Slice(names, func(i, j int) bool {
+		iTime, iErr := time.Parse(time.RFC3339, names[i].Edited)
+		jTime, jErr := time.Parse(time.RFC3339, names[j].Edited)
+		
+		// If either time fails to parse, try to compare as RFC3339 strings
+		// This works because RFC3339 strings sort chronologically
+		if iErr != nil || jErr != nil {
+			// Log parsing errors for debugging
+			if iErr != nil {
+				log.Printf("[DEBUG] Failed to parse time %s: %v", names[i].Edited, iErr)
+			}
+			if jErr != nil {
+				log.Printf("[DEBUG] Failed to parse time %s: %v", names[j].Edited, jErr)
+			}
+			return names[i].Edited > names[j].Edited
+		}
+		
+		return iTime.After(jTime)
+	})
 
 	//log.Printf(names)
 	result.Success = true
